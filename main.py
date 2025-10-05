@@ -1,8 +1,10 @@
 import logging
 import asyncio
 import time
+import pytz
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from apscheduler.triggers.cron import CronTrigger
 
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = "7723918807:AAFPfwLnRFi1-4jGfeNk4j6AVaKZ9mauw6I"
@@ -23,7 +25,7 @@ last_post_time = {}
 active_album_tasks = set()
 
 # === ИМПОРТ ГЕНЕРАТОРА ТЕМ ===
-from theme_generator import generate_weekly_theme, get_current_theme, should_generate_new_theme
+from theme_generator import generate_weekly_theme, get_current_theme
 
 # === КОМАНДЫ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,22 +69,20 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Не удалось отправить пост в канал.")
 
 
-# === ФОН: проверка и публикация темы ===
+# === ФОН: публикация темы каждое воскресенье в 00:00 МСК ===
 async def weekly_theme_job(context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет раз в час — пора ли новой теме"""
-    if should_generate_new_theme():
-        new_theme = await generate_weekly_theme()
-        if new_theme:
-            try:
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=f"🗓 **Тема недели: «{new_theme}»**\n\n"
-                         f"Присылайте посты, вдохновлённые этим словом.\n"
-                         f"Лучшие — закрепим!"
-                )
-                logger.info(f"Опубликована новая тема: {new_theme}")
-            except Exception as e:
-                logger.error(f"Не удалось опубликовать тему: {e}")
+    new_theme = await generate_weekly_theme()
+    if new_theme:
+        try:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=f"🗓 **Тема недели: «{new_theme}»**\n\n"
+                     f"Присылайте посты, вдохновлённые этим словом.\n"
+                     f"Лучшие — закрепим!"
+            )
+            logger.info(f"Опубликована новая тема: {new_theme}")
+        except Exception as e:
+            logger.error(f"Не удалось опубликовать тему: {e}")
 
 
 # === ОСНОВНОЙ ОБРАБОТЧИК ===
@@ -135,7 +135,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
                 last_post_time[user_id] = current_time
 
-            # Отправка как новое сообщение (без "переслано")
             try:
                 if message.text is not None:
                     await context.bot.send_message(
@@ -173,7 +172,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         message_id=message.message_id
                     )
 
-                # === Напоминание о теме ===
                 theme_word = get_current_theme()
                 if theme_word:
                     await update.message.reply_text(f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?")
@@ -241,18 +239,25 @@ def main():
     logger.info("🚀 Запуск бота...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("theme", theme))
     application.add_handler(CommandHandler("pin", pin))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
-    # Запуск фоновой задачи (проверка темы каждый час)
-    application.job_queue.run_repeating(weekly_theme_job, interval=3600, first=10)
+    # === ЗАПУСК КАЖДОЕ ВОСКРЕСЕНЬЕ В 00:00 МСК (21:00 UTC субботы) ===
+    moscow_tz = pytz.timezone("Europe/Moscow")
+    trigger = CronTrigger(
+        day_of_week=5,   # 5 = суббота (UTC)
+        hour=21,         # 21:00 UTC = 00:00 MSK воскресенья
+        minute=0,
+        timezone=pytz.utc
+    )
+    application.job_queue.run_custom(weekly_theme_job, job_kwargs={"trigger": trigger})
 
-    logger.info("✅ Бот запущен: админ без лимита, пользователи — 1 пост/30 мин, альбомы, /pin, темы")
+    logger.info("✅ Бот запущен: тема — каждое воскресенье 00:00 МСК")
     application.run_polling()
 
 
 if __name__ == '__main__':
     main()
+
