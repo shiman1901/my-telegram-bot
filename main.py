@@ -1,7 +1,7 @@
 import logging
 import asyncio
 import time
-from telegram import Update, InputMediaPhoto, InputMediaVideo, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # === КОНФИГУРАЦИЯ ===
@@ -28,7 +28,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Привет! 👋\n\n"
         "Отправляй фото, видео, текст или альбомы — всё попадёт в канал.\n"
-        "⚠️ Лимит для пользователей: 1 пост в 30 минут."
+        "⚠️ Лимит для пользователей: 1 пост в 30 минут.\n\n"
+        "💡 Совет: используй символы (█, ▓, │, ─) вместо эмодзи для цветных баров — так они не превратятся в реакции."
     )
     await update.message.reply_text(text)
 
@@ -39,6 +40,7 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -72,7 +74,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if message.media_group_id:
             group_id = message.media_group_id
 
-            # Проверка лимита только для НЕ-админа и только при первом сообщении альбома
             if not is_admin and group_id not in album_buffer:
                 if user_id in last_post_time:
                     elapsed = current_time - last_post_time[user_id]
@@ -84,12 +85,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
                 last_post_time[user_id] = current_time
 
-            # Добавляем в буфер
             if group_id not in album_buffer:
                 album_buffer[group_id] = []
             album_buffer[group_id].append(message)
 
-            # Запускаем обработку один раз
             if group_id not in active_album_tasks:
                 active_album_tasks.add(group_id)
                 asyncio.create_task(
@@ -109,13 +108,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
                 last_post_time[user_id] = current_time
 
-            # Отправка
-            await context.bot.forward_message(
-                chat_id=CHANNEL_ID,
-                from_chat_id=update.effective_chat.id,
-                message_id=message.message_id
-            )
-            await update.message.reply_text("✅ Пост отправлен в канал!")
+            # Отправляем как НОВОЕ сообщение, а не forward — чтобы не было "от кого"
+            try:
+                if message.text is not None:
+                    await context.bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=message.text,
+                        parse_mode=None  # Сохраняет всё как есть: эмодзи, символы, пробелы
+                    )
+                elif message.photo:
+                    await context.bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=message.photo[-1].file_id,
+                        caption=message.caption
+                    )
+                elif message.video:
+                    await context.bot.send_video(
+                        chat_id=CHANNEL_ID,
+                        video=message.video.file_id,
+                        caption=message.caption
+                    )
+                elif message.document:
+                    await context.bot.send_document(
+                        chat_id=CHANNEL_ID,
+                        document=message.document.file_id,
+                        caption=message.caption
+                    )
+                elif message.sticker:
+                    await context.bot.send_sticker(
+                        chat_id=CHANNEL_ID,
+                        sticker=message.sticker.file_id
+                    )
+                else:
+                    # fallback: если тип не поддерживается
+                    await context.bot.forward_message(
+                        chat_id=CHANNEL_ID,
+                        from_chat_id=update.effective_chat.id,
+                        message_id=message.message_id
+                    )
+
+                await update.message.reply_text("✅ Пост отправлен в канал!")
+
+            except Exception as e:
+                logger.error(f"Ошибка отправки одиночного сообщения: {e}")
+                await update.message.reply_text("❌ Не удалось отправить пост.")
 
     except Exception as e:
         logger.error(f"Ошибка handle_message от user={user_id}: {e}")
