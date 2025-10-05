@@ -7,9 +7,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = "7723918807:AAFPfwLnRFi1-4jGfeNk4j6AVaKZ9mauw6I"
 CHANNEL_ID = -1003154844765
-YOUR_ADMIN_ID = 5610556402  # Твой Telegram ID
-
-POST_COOLDOWN = 30 * 60  # 30 минут в секундах
+YOUR_ADMIN_ID = 5610556402
+POST_COOLDOWN = 30 * 60  # 30 минут
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -23,6 +22,9 @@ album_buffer = {}
 last_post_time = {}
 active_album_tasks = set()
 
+# === ИМПОРТ ГЕНЕРАТОРА ТЕМ ===
+from theme_generator import generate_weekly_theme, get_current_theme, should_generate_new_theme
+
 # === КОМАНДЫ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -31,6 +33,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ Лимит для пользователей: 1 пост в 30 минут."
     )
     await update.message.reply_text(text)
+
+
+async def theme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    theme_word = get_current_theme()
+    if theme_word:
+        await update.message.reply_text(f"📌 Текущая тема: «{theme_word}»")
+    else:
+        await update.message.reply_text("❌ Тема ещё не установлена. Следующая — в воскресенье!")
 
 
 async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,6 +65,24 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка /pin: {e}")
         await update.message.reply_text("❌ Не удалось отправить пост в канал.")
+
+
+# === ФОН: проверка и публикация темы ===
+async def weekly_theme_job(context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет раз в час — пора ли новой теме"""
+    if should_generate_new_theme():
+        new_theme = await generate_weekly_theme()
+        if new_theme:
+            try:
+                await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=f"🗓 **Тема недели: «{new_theme}»**\n\n"
+                         f"Присылайте посты, вдохновлённые этим словом.\n"
+                         f"Лучшие — закрепим!"
+                )
+                logger.info(f"Опубликована новая тема: {new_theme}")
+            except Exception as e:
+                logger.error(f"Не удалось опубликовать тему: {e}")
 
 
 # === ОСНОВНОЙ ОБРАБОТЧИК ===
@@ -107,13 +135,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return
                 last_post_time[user_id] = current_time
 
-            # Отправляем как НОВОЕ сообщение, а не forward — чтобы не было "от кого"
+            # Отправка как новое сообщение (без "переслано")
             try:
                 if message.text is not None:
                     await context.bot.send_message(
                         chat_id=CHANNEL_ID,
                         text=message.text,
-                        parse_mode=None  # Сохраняет всё как есть
+                        parse_mode=None
                     )
                 elif message.photo:
                     await context.bot.send_photo(
@@ -139,14 +167,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         sticker=message.sticker.file_id
                     )
                 else:
-                    # fallback: если тип не поддерживается
                     await context.bot.forward_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=update.effective_chat.id,
                         message_id=message.message_id
                     )
 
-                await update.message.reply_text("✅ Пост отправлен в канал!")
+                # === Напоминание о теме ===
+                theme_word = get_current_theme()
+                if theme_word:
+                    await update.message.reply_text(f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?")
+                else:
+                    await update.message.reply_text("✅ Пост отправлен в канал!")
 
             except Exception as e:
                 logger.error(f"Ошибка отправки одиночного сообщения: {e}")
@@ -191,7 +223,11 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
 
     try:
         await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-        await messages[-1].reply_text("✅ Альбом отправлен в канал!")
+        theme_word = get_current_theme()
+        if theme_word:
+            await messages[-1].reply_text(f"✅ Альбом отправлен в канал!\nТекущая тема: «{theme_word}»")
+        else:
+            await messages[-1].reply_text("✅ Альбом отправлен в канал!")
     except Exception as e:
         logger.error(f"Ошибка отправки альбома {group_id}: {e}")
         try:
@@ -205,11 +241,16 @@ def main():
     logger.info("🚀 Запуск бота...")
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Обработчики
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("theme", theme))
     application.add_handler(CommandHandler("pin", pin))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
-    logger.info("✅ Бот запущен: админ без лимита, пользователи — 1 пост/30 мин, альбомы, /pin")
+    # Запуск фоновой задачи (проверка темы каждый час)
+    application.job_queue.run_repeating(weekly_theme_job, interval=3600, first=10)
+
+    logger.info("✅ Бот запущен: админ без лимита, пользователи — 1 пост/30 мин, альбомы, /pin, темы")
     application.run_polling()
 
 
