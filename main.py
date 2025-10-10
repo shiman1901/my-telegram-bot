@@ -10,7 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 BOT_TOKEN = "7723918807:AAFPfwLnRFi1-4jGfeNk4j6AVaKZ9mauw6I"
 CHANNEL_ID = -1003154844765
 YOUR_ADMIN_ID = 5610556402
-POST_COOLDOWN = 10 * 60  # 10 минут (было 30)
+POST_COOLDOWN = 10 * 60  # 10 минут
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -52,7 +52,7 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot  ")]]
+        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         sent = await context.bot.send_message(
@@ -78,7 +78,8 @@ async def weekly_theme_job(context: ContextTypes.DEFAULT_TYPE):
                 chat_id=CHANNEL_ID,
                 text=f"🗓 **Тема недели: «{new_theme}»**\n\n"
                      f"Присылайте посты, вдохновлённые этим словом.\n"
-                     f"Лучшие — закрепим!"
+                     f"Лучшие — закрепим!",
+                parse_mode="Markdown"
             )
             logger.info(f"Опубликована новая тема: {new_theme}")
         except Exception as e:
@@ -122,6 +123,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 asyncio.create_task(
                     send_album_later_with_notification(group_id, context, message)
                 )
+            return  # Важно: не обрабатывать как одиночное сообщение!
 
         # === ОДИНОЧНОЕ СООБЩЕНИЕ ===
         else:
@@ -182,7 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОТПРАВКА АЛЬБОМА ===
 async def send_album_later_with_notification(group_id: str, context: ContextTypes.DEFAULT_TYPE, first_msg):
-    await asyncio.sleep(1.3)
+    await asyncio.sleep(2.5)  # Увеличена задержка для надёжного сбора всех частей альбома
 
     if group_id not in album_buffer:
         active_album_tasks.discard(group_id)
@@ -197,19 +199,21 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
     media = []
     for msg in messages:
         if msg.photo:
-            file_id = msg.photo[-1].file_id
-            media.append(InputMediaPhoto(media=file_id, caption=msg.caption))
+            media.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=msg.caption))
         elif msg.video:
             media.append(InputMediaVideo(media=msg.video.file_id, caption=msg.caption))
+        else:
+            logger.warning(f"Пропущен неподдерживаемый тип медиа в альбоме: {msg}")
 
     if not media:
         try:
-            await messages[-1].reply_text("❌ Альбом не содержит поддерживаемых медиафайлов.")
+            await messages[-1].reply_text("❌ Альбом не содержит поддерживаемых медиафайлов (только фото/видео).")
         except:
             pass
         return
 
     try:
+        logger.info(f"Отправка альбома из {len(media)} элементов в канал")
         await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
         theme_word = get_current_theme()
         if theme_word:
@@ -219,7 +223,7 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
     except Exception as e:
         logger.error(f"Ошибка отправки альбома {group_id}: {e}")
         try:
-            await messages[-1].reply_text("❌ Не удалось отправить альбом. Файлы могут быть слишком большими.")
+            await messages[-1].reply_text("❌ Не удалось отправить альбом. Возможно, файлы слишком большие или недопустимый формат.")
         except:
             pass
 
@@ -235,10 +239,9 @@ def main():
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
     # === ЗАПУСК КАЖДОЕ ВОСКРЕСЕНЬЕ В 00:00 МСК (21:00 UTC субботы) ===
-    moscow_tz = pytz.timezone("Europe/Moscow")
     trigger = CronTrigger(
-        day_of_week=5,   # 5 = суббота (UTC)
-        hour=21,         # 21:00 UTC = 00:00 MSK воскресенья
+        day_of_week=5,   # суббота в UTC
+        hour=21,         # 21:00 UTC = 00:00 МСК воскресенья
         minute=0,
         timezone=pytz.utc
     )
