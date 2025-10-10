@@ -10,7 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 BOT_TOKEN = "7723918807:AAFPfwLnRFi1-4jGfeNk4j6AVaKZ9mauw6I"
 CHANNEL_ID = -1003154844765
 YOUR_ADMIN_ID = 5610556402
-POST_COOLDOWN = 30 * 60  # 30 минут
+POST_COOLDOWN = 10 * 60  # 10 минут (было 30)
 
 # === ЛОГИРОВАНИЕ ===
 logging.basicConfig(
@@ -32,7 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Привет! 👋\n\n"
         "Отправляй фото, видео, текст или альбомы — всё попадёт в канал.\n"
-        "⚠️ Лимит для пользователей: 1 пост в 30 минут."
+        f"⚠️ Лимит для пользователей: 1 пост в {POST_COOLDOWN // 60} минут."
     )
     await update.message.reply_text(text)
 
@@ -52,7 +52,7 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot")]]
+        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot  ")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         sent = await context.bot.send_message(
@@ -96,21 +96,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
     is_admin = (user_id == YOUR_ADMIN_ID)
 
+    # Проверка кулдауна для обычных пользователей
+    if not is_admin:
+        if user_id in last_post_time:
+            elapsed = current_time - last_post_time[user_id]
+            if elapsed < POST_COOLDOWN:
+                remaining = max(1, int((POST_COOLDOWN - elapsed) // 60))
+                await update.message.reply_text(
+                    f"⏳ Подожди ещё {remaining} мин. Лимит: 1 пост в {POST_COOLDOWN // 60} минут."
+                )
+                return
+        last_post_time[user_id] = current_time
+
     try:
         # === АЛЬБОМ ===
         if message.media_group_id:
             group_id = message.media_group_id
-
-            if not is_admin and group_id not in album_buffer:
-                if user_id in last_post_time:
-                    elapsed = current_time - last_post_time[user_id]
-                    if elapsed < POST_COOLDOWN:
-                        remaining = max(1, int((POST_COOLDOWN - elapsed) // 60))
-                        await update.message.reply_text(
-                            f"⏳ Подожди ещё {remaining} мин. Лимит: 1 пост в 30 минут."
-                        )
-                        return
-                last_post_time[user_id] = current_time
 
             if group_id not in album_buffer:
                 album_buffer[group_id] = []
@@ -124,17 +125,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # === ОДИНОЧНОЕ СООБЩЕНИЕ ===
         else:
-            if not is_admin:
-                if user_id in last_post_time:
-                    elapsed = current_time - last_post_time[user_id]
-                    if elapsed < POST_COOLDOWN:
-                        remaining = max(1, int((POST_COOLDOWN - elapsed) // 60))
-                        await update.message.reply_text(
-                            f"⏳ Подожди ещё {remaining} мин. Лимит: 1 пост в 30 минут."
-                        )
-                        return
-                last_post_time[user_id] = current_time
-
             try:
                 if message.text is not None:
                     await context.bot.send_message(
@@ -260,4 +250,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
