@@ -27,6 +27,7 @@ active_album_tasks = set()
 # === ИМПОРТ ГЕНЕРАТОРА ТЕМ ===
 from theme_generator import generate_weekly_theme, get_current_theme
 
+
 # === КОМАНДЫ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -90,6 +91,7 @@ async def weekly_theme_job(context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or not update.effective_message:
+        logger.warning("Пропущено сообщение: отсутствует пользователь или сообщение")
         return
 
     user_id = user.id
@@ -97,12 +99,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
     is_admin = (user_id == YOUR_ADMIN_ID)
 
-    # Проверка кулдауна для обычных пользователей
+    logger.info(f"📩 Получено сообщение от user={user_id} (admin={is_admin}), media_group_id={message.media_group_id}")
+
+    # Проверка кулдауна
     if not is_admin:
         if user_id in last_post_time:
             elapsed = current_time - last_post_time[user_id]
             if elapsed < POST_COOLDOWN:
                 remaining = max(1, int((POST_COOLDOWN - elapsed) // 60))
+                logger.info(f"🕒 Пользователь {user_id} превысил лимит. Осталось ждать: {remaining} мин.")
                 await update.message.reply_text(
                     f"⏳ Подожди ещё {remaining} мин. Лимит: 1 пост в {POST_COOLDOWN // 60} минут."
                 )
@@ -113,78 +118,94 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # === АЛЬБОМ ===
         if message.media_group_id:
             group_id = message.media_group_id
-
+            logger.info(f"🖼️ Обнаружен альбом: media_group_id={group_id}")
             if group_id not in album_buffer:
                 album_buffer[group_id] = []
             album_buffer[group_id].append(message)
 
             if group_id not in active_album_tasks:
                 active_album_tasks.add(group_id)
+                logger.info(f"⏱️ Запланирована отложенная отправка альбома {group_id}")
                 asyncio.create_task(
                     send_album_later_with_notification(group_id, context, message)
                 )
-            return  # Важно: не обрабатывать как одиночное сообщение!
+            return
 
         # === ОДИНОЧНОЕ СООБЩЕНИЕ ===
         else:
+            logger.info(f"📨 Обработка одиночного сообщения от user={user_id}")
+            sent = False
             try:
                 if message.text is not None:
-                    await context.bot.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=message.text,
-                        parse_mode=None
-                    )
+                    logger.info("📤 Отправка текста в канал")
+                    await context.bot.send_message(chat_id=CHANNEL_ID, text=message.text)
+                    sent = True
                 elif message.photo:
+                    logger.info(f"📤 Отправка фото (размеров: {len(message.photo)})")
                     await context.bot.send_photo(
                         chat_id=CHANNEL_ID,
                         photo=message.photo[-1].file_id,
                         caption=message.caption
                     )
+                    sent = True
                 elif message.video:
+                    logger.info("📤 Отправка видео")
                     await context.bot.send_video(
                         chat_id=CHANNEL_ID,
                         video=message.video.file_id,
                         caption=message.caption
                     )
+                    sent = True
                 elif message.document:
+                    logger.info(f"📤 Отправка документа: {message.document.file_name}")
                     await context.bot.send_document(
                         chat_id=CHANNEL_ID,
                         document=message.document.file_id,
                         caption=message.caption
                     )
+                    sent = True
                 elif message.sticker:
+                    logger.info("📤 Отправка стикера")
                     await context.bot.send_sticker(
                         chat_id=CHANNEL_ID,
                         sticker=message.sticker.file_id
                     )
+                    sent = True
                 else:
+                    logger.info("📤 Пересылка сообщения как есть (fallback)")
                     await context.bot.forward_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=update.effective_chat.id,
                         message_id=message.message_id
                     )
+                    sent = True
 
-                theme_word = get_current_theme()
-                if theme_word:
-                    await update.message.reply_text(f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?")
-                else:
-                    await update.message.reply_text("✅ Пост отправлен в канал!")
+                if sent:
+                    theme_word = get_current_theme()
+                    if theme_word:
+                        await update.message.reply_text(f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?")
+                    else:
+                        await update.message.reply_text("✅ Пост отправлен в канал!")
+                    logger.info(f"✅ Успешно отправлено в канал: user={user_id}")
 
             except Exception as e:
-                logger.error(f"Ошибка отправки одиночного сообщения: {e}")
-                await update.message.reply_text("❌ Не удалось отправить пост.")
+                logger.error(f"❌ Ошибка при отправке одиночного сообщения от user={user_id}: {e}", exc_info=True)
+                try:
+                    await update.message.reply_text("❌ Не удалось отправить пост. Возможно, файл слишком большой или недопустимого формата.")
+                except:
+                    pass
 
     except Exception as e:
-        logger.error(f"Ошибка handle_message от user={user_id}: {e}")
+        logger.critical(f"💥 Критическая ошибка в handle_message от user={user_id}: {e}", exc_info=True)
         try:
-            await update.message.reply_text("❌ Не удалось обработать пост.")
+            await update.message.reply_text("❌ Произошла внутренняя ошибка. Админ уже чинит!")
         except:
             pass
 
 
 # === ОТПРАВКА АЛЬБОМА ===
 async def send_album_later_with_notification(group_id: str, context: ContextTypes.DEFAULT_TYPE, first_msg):
-    await asyncio.sleep(2.5)  # Увеличена задержка для надёжного сбора всех частей альбома
+    await asyncio.sleep(2.5)
 
     if group_id not in album_buffer:
         active_album_tasks.discard(group_id)
@@ -213,7 +234,7 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
         return
 
     try:
-        logger.info(f"Отправка альбома из {len(media)} элементов в канал")
+        logger.info(f"📤 Отправка альбома из {len(media)} элементов в канал")
         await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
         theme_word = get_current_theme()
         if theme_word:
@@ -221,7 +242,7 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
         else:
             await messages[-1].reply_text("✅ Альбом отправлен в канал!")
     except Exception as e:
-        logger.error(f"Ошибка отправки альбома {group_id}: {e}")
+        logger.error(f"❌ Ошибка отправки альбома {group_id}: {e}", exc_info=True)
         try:
             await messages[-1].reply_text("❌ Не удалось отправить альбом. Возможно, файлы слишком большие или недопустимый формат.")
         except:
@@ -238,17 +259,17 @@ def main():
     application.add_handler(CommandHandler("pin", pin))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
 
-    # === ЗАПУСК КАЖДОЕ ВОСКРЕСЕНЬЕ В 00:00 МСК (21:00 UTC субботы) ===
+    # Еженедельная тема: воскресенье 00:00 МСК = суббота 21:00 UTC
     trigger = CronTrigger(
-        day_of_week=5,   # суббота в UTC
-        hour=21,         # 21:00 UTC = 00:00 МСК воскресенья
+        day_of_week=5,   # 5 = суббота (UTC)
+        hour=21,
         minute=0,
         timezone=pytz.utc
     )
     application.job_queue.run_custom(weekly_theme_job, job_kwargs={"trigger": trigger})
 
-    logger.info("✅ Бот запущен: тема — каждое воскресенье 00:00 МСК")
-    application.run_polling()
+    logger.info("✅ Бот запущен. Ожидание сообщений...")
+    application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == '__main__':
