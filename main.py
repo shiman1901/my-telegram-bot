@@ -99,7 +99,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_time = time.time()
     is_admin = (user_id == YOUR_ADMIN_ID)
 
-    logger.info(f"📩 Получено сообщение от user={user_id} (admin={is_admin}), media_group_id={message.media_group_id}")
+    logger.info(
+        f"📨 Получено сообщение от user={user_id} (admin={is_admin}), "
+        f"media_group_id={message.media_group_id}, "
+        f"has_photo={bool(message.photo)}, "
+        f"has_video={bool(message.video)}, "
+        f"has_document={bool(message.document)}"
+    )
 
     # Проверка кулдауна
     if not is_admin:
@@ -133,15 +139,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # === ОДИНОЧНОЕ СООБЩЕНИЕ ===
         else:
-            logger.info(f"📨 Обработка одиночного сообщения от user={user_id}")
+            logger.info(f"📤 Обработка одиночного сообщения от user={user_id}")
             sent = False
             try:
                 if message.text is not None:
-                    logger.info("📤 Отправка текста в канал")
                     await context.bot.send_message(chat_id=CHANNEL_ID, text=message.text)
                     sent = True
                 elif message.photo:
-                    logger.info(f"📤 Отправка фото (размеров: {len(message.photo)})")
                     await context.bot.send_photo(
                         chat_id=CHANNEL_ID,
                         photo=message.photo[-1].file_id,
@@ -149,7 +153,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     sent = True
                 elif message.video:
-                    logger.info("📤 Отправка видео")
                     await context.bot.send_video(
                         chat_id=CHANNEL_ID,
                         video=message.video.file_id,
@@ -157,7 +160,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     sent = True
                 elif message.document:
-                    logger.info(f"📤 Отправка документа: {message.document.file_name}")
                     await context.bot.send_document(
                         chat_id=CHANNEL_ID,
                         document=message.document.file_id,
@@ -165,14 +167,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     sent = True
                 elif message.sticker:
-                    logger.info("📤 Отправка стикера")
                     await context.bot.send_sticker(
                         chat_id=CHANNEL_ID,
                         sticker=message.sticker.file_id
                     )
                     sent = True
                 else:
-                    logger.info("📤 Пересылка сообщения как есть (fallback)")
                     await context.bot.forward_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=update.effective_chat.id,
@@ -182,16 +182,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if sent:
                     theme_word = get_current_theme()
-                    if theme_word:
-                        await update.message.reply_text(f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?")
-                    else:
-                        await update.message.reply_text("✅ Пост отправлен в канал!")
+                    reply_text = f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?" if theme_word else "✅ Пост отправлен в канал!"
+                    await update.message.reply_text(reply_text)
                     logger.info(f"✅ Успешно отправлено в канал: user={user_id}")
 
             except Exception as e:
                 logger.error(f"❌ Ошибка при отправке одиночного сообщения от user={user_id}: {e}", exc_info=True)
                 try:
-                    await update.message.reply_text("❌ Не удалось отправить пост. Возможно, файл слишком большой или недопустимого формата.")
+                    await update.message.reply_text("❌ Не удалось отправить пост. Возможно, файл слишком большой.")
                 except:
                     pass
 
@@ -217,14 +215,18 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
     if not messages:
         return
 
+    # === ВАЖНО: подпись (caption) только у ПЕРВОГО элемента! ===
     media = []
-    for msg in messages:
+    for i, msg in enumerate(messages):
+        caption = msg.caption if i == 0 else None
         if msg.photo:
-            media.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=msg.caption))
+            media.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption))
         elif msg.video:
-            media.append(InputMediaVideo(media=msg.video.file_id, caption=msg.caption))
+            media.append(InputMediaVideo(media=msg.video.file_id, caption=caption))
         else:
             logger.warning(f"Пропущен неподдерживаемый тип медиа в альбоме: {msg}")
+
+    logger.info(f"Собран альбом: {len(media)} медиа, из них с caption: {sum(1 for m in media if m.caption)}")
 
     if not media:
         try:
@@ -237,10 +239,8 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
         logger.info(f"📤 Отправка альбома из {len(media)} элементов в канал")
         await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
         theme_word = get_current_theme()
-        if theme_word:
-            await messages[-1].reply_text(f"✅ Альбом отправлен в канал!\nТекущая тема: «{theme_word}»")
-        else:
-            await messages[-1].reply_text("✅ Альбом отправлен в канал!")
+        reply_text = f"✅ Альбом отправлен в канал!\nТекущая тема: «{theme_word}»" if theme_word else "✅ Альбом отправлен в канал!"
+        await messages[-1].reply_text(reply_text)
     except Exception as e:
         logger.error(f"❌ Ошибка отправки альбома {group_id}: {e}", exc_info=True)
         try:
@@ -261,7 +261,7 @@ def main():
 
     # Еженедельная тема: воскресенье 00:00 МСК = суббота 21:00 UTC
     trigger = CronTrigger(
-        day_of_week=5,   # 5 = суббота (UTC)
+        day_of_week=5,   # суббота в UTC
         hour=21,
         minute=0,
         timezone=pytz.utc
