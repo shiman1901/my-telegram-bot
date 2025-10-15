@@ -4,7 +4,6 @@ import time
 import pytz
 from telegram import Update, InputMediaPhoto, InputMediaVideo
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from apscheduler.triggers.cron import CronTrigger
 
 # === КОНФИГУРАЦИЯ ===
 BOT_TOKEN = "7723918807:AAFPfwLnRFi1-4jGfeNk4j6AVaKZ9mauw6I"
@@ -27,9 +26,6 @@ active_album_tasks = set()
 # Пользователи, исключённые из кулдауна
 EXEMPTED_USERS = {973206254, 628944825}
 
-# === ИМПОРТ ГЕНЕРАТОРА ТЕМ ===
-from theme_generator import generate_weekly_theme, get_current_theme
-
 
 # === КОМАНДЫ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,14 +37,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-async def theme(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    theme_word = get_current_theme()
-    if theme_word:
-        await update.message.reply_text(f"📌 Текущая тема: «{theme_word}»")
-    else:
-        await update.message.reply_text("❌ Тема ещё не установлена. Следующая — в воскресенье!")
-
-
 async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != YOUR_ADMIN_ID:
         await update.message.reply_text("❌ Только админ может использовать эту команду.")
@@ -56,7 +44,7 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot")]]
+        keyboard = [[InlineKeyboardButton("ПОСТ", url="https://t.me/CHA2M_bot  ")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         sent = await context.bot.send_message(
@@ -73,23 +61,6 @@ async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Не удалось отправить пост в канал.")
 
 
-# === ФОН: публикация темы каждое воскресенье в 00:00 МСК ===
-async def weekly_theme_job(context: ContextTypes.DEFAULT_TYPE):
-    new_theme = await generate_weekly_theme()
-    if new_theme:
-        try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=f"🗓 **Тема недели: «{new_theme}»**\n\n"
-                     f"Присылайте посты, вдохновлённые этим словом.\n"
-                     f"Лучшие — закрепим!",
-                parse_mode="Markdown"
-            )
-            logger.info(f"Опубликована новая тема: {new_theme}")
-        except Exception as e:
-            logger.error(f"Не удалось опубликовать тему: {e}")
-
-
 # === ОСНОВНОЙ ОБРАБОТЧИК ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -100,7 +71,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     message = update.effective_message
     current_time = time.time()
-    # Проверяем, является ли пользователь админом ИЛИ в списке исключений
     is_exempted = (user_id == YOUR_ADMIN_ID) or (user_id in EXEMPTED_USERS)
 
     logger.info(
@@ -116,7 +86,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_id = message.media_group_id
         logger.info(f"🖼️ Обнаружен альбом: media_group_id={group_id}")
 
-        # Всегда добавляем в буфер, даже если кулдаун активен
         if group_id not in album_buffer:
             album_buffer[group_id] = []
         album_buffer[group_id].append(message)
@@ -124,7 +93,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if group_id not in active_album_tasks:
             active_album_tasks.add(group_id)
             logger.info(f"⏱️ Запланирована отложенная отправка альбома {group_id}")
-            # Передаём user_id для проверки кулдауна
             asyncio.create_task(
                 send_album_later_with_notification(group_id, context, message, user_id, is_exempted)
             )
@@ -132,7 +100,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === ОДИНОЧНОЕ СООБЩЕНИЕ ===
     else:
-        # Проверка кулдауна для одиночных сообщений (только если пользователь НЕ админ и НЕ исключён)
         if not is_exempted:
             if user_id in last_post_time:
                 elapsed = current_time - last_post_time[user_id]
@@ -145,7 +112,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
             last_post_time[user_id] = current_time
 
-        # ... (обработка одиночного сообщения как раньше)
         logger.info(f"📤 Обработка одиночного сообщения от user={user_id}")
         sent = False
         try:
@@ -188,9 +154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sent = True
 
             if sent:
-                theme_word = get_current_theme()
-                reply_text = f"✅ Пост отправлен!\nТекущая тема: «{theme_word}» — как ты его понял?" if theme_word else "✅ Пост отправлен в канал!"
-                await update.message.reply_text(reply_text)
+                await update.message.reply_text("✅ Пост отправлен в канал!")
                 logger.info(f"✅ Успешно отправлено в канал: user={user_id}")
 
         except Exception as e:
@@ -203,7 +167,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОТПРАВКА АЛЬБОМА ===
 async def send_album_later_with_notification(group_id: str, context: ContextTypes.DEFAULT_TYPE, first_msg, user_id: int, is_exempted: bool):
-    await asyncio.sleep(2.5)  # Ждём, чтобы собрать все части альбома
+    await asyncio.sleep(2.5)
 
     if group_id not in album_buffer:
         active_album_tasks.discard(group_id)
@@ -215,7 +179,6 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
     if not messages:
         return
 
-    # Проверяем кулдаун ПОСЛЕ сбора альбома, но до отправки (только если пользователь НЕ админ и НЕ исключён)
     current_time = time.time()
     if not is_exempted:
         if user_id in last_post_time:
@@ -223,26 +186,20 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
             if elapsed < POST_COOLDOWN:
                 remaining = max(1, int((POST_COOLDOWN - elapsed)))
                 logger.info(f"⏳ Альбом {group_id} от user={user_id} ждёт окончания кулдауна ({remaining}s).")
-                # Отправляем пользователю уведомление
                 await messages[0].reply_text(
                     f"⏳ Альбом будет отправлен через {remaining} секунд(ы) после окончания кулдауна."
                 )
-                # Ждём окончания кулдауна
                 await asyncio.sleep(remaining)
-                # Проверяем снова, на всякий случай
                 current_time = time.time()
                 elapsed = current_time - last_post_time.get(user_id, 0)
                 if elapsed < POST_COOLDOWN:
-                    # Что-то пошло не так, кулдаун всё ещё не прошёл
                     logger.error(f"❌ Кулдаун всё ещё не прошёл для user={user_id} после ожидания.")
                     await messages[0].reply_text("❌ Произошла ошибка при отправке альбома.")
                     return
 
-    # Обновляем время последнего поста ПОСЛЕ ожидания (если не исключён)
     if not is_exempted:
         last_post_time[user_id] = current_time
 
-    # Собираем медиа (подпись только у первого)
     media = []
     for i, msg in enumerate(messages):
         caption = msg.caption if i == 0 else None
@@ -253,7 +210,7 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
         else:
             logger.warning(f"Пропущен неподдерживаемый тип медиа в альбоме: {msg}")
 
-    logger.info(f"Собран альбом: {len(media)} медиа, из них с caption: {sum(1 for m in media if m.caption)}")
+    logger.info(f"Собран альбом: {len(media)} медиа")
 
     if not media:
         try:
@@ -265,9 +222,7 @@ async def send_album_later_with_notification(group_id: str, context: ContextType
     try:
         logger.info(f"📤 Отправка альбома из {len(media)} элементов в канал")
         await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media)
-        theme_word = get_current_theme()
-        reply_text = f"✅ Альбом отправлен в канал!\nТекущая тема: «{theme_word}»" if theme_word else "✅ Альбом отправлен в канал!"
-        await messages[-1].reply_text(reply_text)
+        await messages[-1].reply_text("✅ Альбом отправлен в канал!")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки альбома {group_id}: {e}", exc_info=True)
         try:
@@ -282,18 +237,8 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("theme", theme))
     application.add_handler(CommandHandler("pin", pin))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-
-    # Еженедельная тема: воскресенье 00:00 МСК = суббота 21:00 UTC
-    trigger = CronTrigger(
-        day_of_week=5,   # суббота в UTC
-        hour=21,
-        minute=0,
-        timezone=pytz.utc
-    )
-    application.job_queue.run_custom(weekly_theme_job, job_kwargs={"trigger": trigger})
 
     logger.info("✅ Бот запущен. Ожидание сообщений...")
     application.run_polling(drop_pending_updates=True)
